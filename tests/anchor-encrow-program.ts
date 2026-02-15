@@ -3,14 +3,15 @@ import { Program } from "@coral-xyz/anchor";
 import { AnchorEncrowProgram } from "../target/types/anchor_encrow_program";
 import { expect } from "chai";
 import { getAssociatedTokenAddressSync, createAssociatedTokenAccountInstruction, createMint, mintTo, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { Keypair } from "@solana/web3.js";
 
 describe("anchor_encrow_program", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
   const program = anchor.workspace.AnchorEncrowProgram as Program<AnchorEncrowProgram>;
-  const maker = provider.wallet.publicKey;
-  const taker = anchor.web3.Keypair.generate();
+  const maker = Keypair.generate();
+  const taker = Keypair.generate();
 
   let mintA: anchor.web3.PublicKey;
   let mintB: anchor.web3.PublicKey;
@@ -29,21 +30,21 @@ describe("anchor_encrow_program", () => {
 
   before(async () => {
     // Airdrop SOL to maker and taker
-    await provider.connection.requestAirdrop(maker, 10 * anchor.web3.LAMPORTS_PER_SOL);
+    await provider.connection.requestAirdrop(maker.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
     await provider.connection.requestAirdrop(taker.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
     await new Promise(resolve => setTimeout(resolve, 1000));
 
     // Create mints (decimals=0 for simplicity)
-    mintA = await createMint(provider.connection, provider.wallet.payer, maker, null, 0);
-    mintB = await createMint(provider.connection, provider.wallet.payer, taker.publicKey, null, 0);
+    mintA = await createMint(provider.connection, maker, maker.publicKey, null, 0);
+    mintB = await createMint(provider.connection, taker, taker.publicKey, null, 0);
 
     // Create ATAs and mint tokens
-    makerAtaA = getAssociatedTokenAddressSync(mintA, maker);
+    makerAtaA = getAssociatedTokenAddressSync(mintA, maker.publicKey);
     const makerAtaATx = new anchor.web3.Transaction().add(
-      createAssociatedTokenAccountInstruction(provider.wallet.publicKey, makerAtaA, maker, mintA)
+      createAssociatedTokenAccountInstruction(provider.wallet.publicKey, makerAtaA, maker.publicKey, mintA)
     );
     await provider.sendAndConfirm(makerAtaATx);
-    await mintTo(provider.connection, provider.wallet.payer, mintA, makerAtaA, provider.wallet.payer, depositAmount * 2);
+    await mintTo(provider.connection, maker, mintA, makerAtaA, maker    , depositAmount * 2);
 
     takerAtaB = getAssociatedTokenAddressSync(mintB, taker.publicKey);
     const takerAtaBTx = new anchor.web3.Transaction().add(
@@ -57,7 +58,7 @@ describe("anchor_encrow_program", () => {
   it("Makes and refunds the escrow", async () => {
     const seed1 = new anchor.BN(1111);
     [escrowPda, escrowBump] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("escrow"), maker.toBuffer(), seed1.toArrayLike(Buffer, "le", 8)],
+      [Buffer.from("escrow"), maker.publicKey.toBuffer(), seed1.toArrayLike(Buffer, "le", 8)],
       program.programId
     );
     vault = getAssociatedTokenAddressSync(mintA, escrowPda, true);
@@ -66,7 +67,7 @@ describe("anchor_encrow_program", () => {
     await program.methods
       .make(seed1, new anchor.BN(depositAmount), new anchor.BN(receiveAmount))
       .accountsStrict({
-        maker: maker,
+        maker: maker.publicKey,
         mintA: mintA,
         mintB: mintB,
         makerAtaA: makerAtaA,
@@ -76,10 +77,11 @@ describe("anchor_encrow_program", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
+      .signers([maker])
       .rpc();
 
     const escrowAccount = await program.account.escrow.fetch(escrowPda);
-    expect(escrowAccount.maker.toBase58()).to.equal(maker.toBase58());
+    expect(escrowAccount.maker.toBase58()).to.equal(maker.publicKey.toBase58());
     expect(escrowAccount.mintA.toBase58()).to.equal(mintA.toBase58());
     expect(escrowAccount.mintB.toBase58()).to.equal(mintB.toBase58());
     expect(escrowAccount.receive.toNumber()).to.equal(receiveAmount);
@@ -92,7 +94,7 @@ describe("anchor_encrow_program", () => {
     await program.methods
       .refund()
       .accountsStrict({
-        maker: maker,
+        maker: maker.publicKey,
         mintA: mintA,
         makerAtaA: makerAtaA,
         escrow: escrowPda,
@@ -101,6 +103,7 @@ describe("anchor_encrow_program", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
+      .signers([maker])
       .rpc();
 
     // Check closed
@@ -114,7 +117,7 @@ describe("anchor_encrow_program", () => {
   it("Makes and takes the escrow", async () => {
     const seed2 = new anchor.BN(2222);
     [escrowPda, escrowBump] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("escrow"), maker.toBuffer(), seed2.toArrayLike(Buffer, "le", 8)],
+      [Buffer.from("escrow"), maker.publicKey.toBuffer(), seed2.toArrayLike(Buffer, "le", 8)],
       program.programId
     );
     vault = getAssociatedTokenAddressSync(mintA, escrowPda, true);
@@ -123,7 +126,7 @@ describe("anchor_encrow_program", () => {
     await program.methods
       .make(seed2, new anchor.BN(depositAmount), new anchor.BN(receiveAmount))
       .accountsStrict({
-        maker: maker,
+        maker: maker.publicKey,
         mintA: mintA,
         mintB: mintB,
         makerAtaA: makerAtaA,
@@ -133,18 +136,19 @@ describe("anchor_encrow_program", () => {
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: anchor.web3.SystemProgram.programId,
       })
+      .signers([maker])
       .rpc();
 
     // Setup for take
     takerAtaA = getAssociatedTokenAddressSync(mintA, taker.publicKey);
-    makerAtaB = getAssociatedTokenAddressSync(mintB, maker);
+    makerAtaB = getAssociatedTokenAddressSync(mintB, maker.publicKey);
 
     // Take
     await program.methods
       .take()
       .accountsStrict({
         taker: taker.publicKey,
-        maker: maker,
+        maker: maker.publicKey,
         mintA: mintA,
         mintB: mintB,
         takerAtaA: takerAtaA,
